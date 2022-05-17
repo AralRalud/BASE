@@ -1,4 +1,5 @@
-# BASE — Brain Age: Standardized datasets and Evaluation protocol
+# BASE — Brain Age: Standardized Evaluation
 
-Code repository for paper *Brain age prediction from T1-weighted MR scans: standardized datasets and evaluation protocol* (Dular et al., 2022).
+Code repository for paper *BASE — Brain Age: Standardized Evaluation* (Dular et al., 2022).
+
 The repository is under construction. 
