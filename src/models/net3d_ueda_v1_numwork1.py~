@@ -1,0 +1,284 @@
+import os
+# Ignore warnings
+import warnings
+from datetime import datetime
+from os.path import join
+
+import numpy as np
+import pytz
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+from src.auxiliary import boolean_string
+
+# export TMPDIR=/tmp/tensorboard_tmp/; mkdir -p $TMPDIR; tensorboard --logdir=./run/tensorboard
+# # For worker1
+# os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+warnings.filterwarnings("ignore")
+
+# Set parser
+import argparse
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    # default for article values
+    parser.add_argument('--seed', type=int, default=10011, help='random seed value for numpy and torch')
+    parser.add_argument('--build_dataset', type=str, help='path to the build_dataset_vX module relative to sources root'
+                                                          'e.g. src.data.build_dataset_v1')
+    parser.add_argument('--run_script_name', type=str, help='name of run script')
+    parser.add_argument('--n_epoch', type=int, default=200, help='number of training epochs')
+    parser.add_argument('--save_epoch', nargs='+', type=int, help='save model at epoch given e.g. --save_epochs 10 20')
+    parser.add_argument('--retrain', type=str, help='path to model that should be retrained')
+    parser.add_argument('--batch_size', default=16, type=int, help='size of mini-batch')
+    parser.add_argument('--learning_rate', type=float, default=0.00005, help='learning rate of SGD optimizer')
+    parser.add_argument('--lr_epochs', type=int, default=1, help='number of epochs between  of learning rate decays')
+    parser.add_argument('--lr_decay', type=float, default=0.0005,
+                        help='lr_decay i.e. lr_i = learning_rate / (1 + lr_decay * epoch // lr_epochs )')
+    parser.add_argument('--bn_affine', type=boolean_string, default=False, help='trainable parameters of batch normalization')
+    parser.add_argument('--weight_decay', type=float, default=0.0005, help='regularization term weight for L2 loss')
+    parser.add_argument('--num_workers', type=int, default=0, help='number of workers for DataLoader')
+    # running in terminal
+    arg = vars(parser.parse_args())
+
+    # running in console
+    # arg = {'seed': 10011,
+    #        'build_dataset': 'src.data.build_dataset_3d_v2',
+    #        'run_script_name': 'Debug',
+    #        'n_epoch': 90,
+    #        'save_epoch': [25, 50, 75],
+    #        'retrain': None,
+    #        'batch_size': 100,    # NOTE: 16 default
+    #        'learning_rate': 0.00005,    # NOTE: 0.00005 default x4 LR since batch_size is also x4
+    #        'lr_decay': 0.001,    # NOTE: 0.0005 default
+    #        'lr_epochs': 1,
+    #        'weight_decay': 0.0005,    # NOTE: 0.0005 default
+    #        'bn_affine': True,
+    #        'num_workers': 12}
+
+    if arg['save_epoch'] is not None:
+        assert all(isinstance(i, int) for i in arg['save_epoch']), 'Values of tuple save_epoch must be integers'
+        assert all(n <= arg['n_epoch'] for n in arg['save_epoch']), \
+            'Values of tuple save_epoch must be less or equal to n_epoch'
+        arg['save_epoch'].append(arg['n_epoch'])
+    else:
+        arg['save_epoch'] = [arg['n_epoch']]   # save final model
+
+#%% REPRODUCIBILITY
+if __name__ == '__main__':
+    # Set seed
+    np.random.seed(arg['seed'])
+    torch.manual_seed(arg['seed'])
+
+    # import dataset builder AFTER! the seed been set
+    import importlib
+    db = importlib.import_module(arg['build_dataset'])
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # multiple processes
+    os.system("taskset -p 0xff %d" % os.getpid())
+
+
+# %% Define net
+class Net3d(nn.Module):
+    def __init__(self, bn_affine):
+        super(Net3d, self).__init__()
+        # Conv3d: Conv3d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1,
+        # groups=1, bias=True, padding_mode='zeros') .... N C D H W = N 1 z y x
+
+        # 5 blocks of:
+        # - 3x3x3 conv layer stride=1 + ReLU
+        # - 3x3x3 conv + batch normalization layer + ReLU
+        # - 2x2x2 max pooling layer stride=2
+        # One fully connected layer w 5760 params
+        # The no of feature layers is set to 8 in thee 1st block and doubled after each max pooling layer
+        self.conv1 = nn.Conv3d(1, 8, 3, stride=1, padding=2)
+        self.conv1_bn = nn.BatchNorm3d(8, affine=bn_affine)
+        self.conv2 = nn.Conv3d(8, 16, 3, stride=1, padding=1)
+        self.conv2_bn = nn.BatchNorm3d(16, affine=bn_affine)
+        self.conv3 = nn.Conv3d(16, 32, 3, stride=1, padding=1)
+        self.conv3_bn = nn.BatchNorm3d(32, affine=bn_affine)
+        self.conv4 = nn.Conv3d(32, 64, 3, stride=1, padding=1)
+        self.conv4_bn = nn.BatchNorm3d(64, affine=bn_affine)
+
+        # Linear(in_features, out_features)
+        self.fc1 = nn.Linear(64 * 5 * 5 * 6, 1024)
+        self.dropout1 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(1024, 1024)
+        self.dropout2 = nn.Dropout(0.5)
+        self.fc3 = nn.Linear(1024, 1)
+
+    def forward(self, x):
+        x = self.conv1_bn(self.conv1(x))
+        x = F.relu(F.max_pool3d(x, 2, stride=2))
+
+        x = self.conv2_bn(self.conv2(x))
+        x = F.relu(F.max_pool3d(x, 2, stride=2))
+
+        x = self.conv3_bn(self.conv3(x))
+        x = F.relu(F.max_pool3d(x, 2, stride=2))
+
+        x = self.conv4_bn(self.conv4(x))
+        x = F.relu(F.max_pool3d(x, 2, stride=2))
+
+        x = x.view(-1, self.num_flat_features(x))
+        x = self.dropout1(self.fc1(x))
+        x = self.dropout2(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+    def num_flat_features(self, x):
+        size = x.size()[1:]    # all dimensions except the batch
+        num_features = 1
+        for s in size:
+            num_features *= s
+        return num_features
+
+
+if __name__ == '__main__':
+    print('Run script:', arg['run_script_name'])
+    net = Net3d(bn_affine=arg['bn_affine'])
+    print(net)
+
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    print(device)
+    net.to(device)
+
+    # parameters of a model are returned by
+    params = list(net.parameters())
+    print('len(params):', len(params))
+    # print(params[0].size()) # conv1's weight
+
+    # Define a Loss function and optimizer: MAE
+    MAE = nn.L1Loss()
+    criterion = nn.MSELoss(reduction='mean')
+    optimizer = optim.SGD(net.parameters(), lr=arg['learning_rate'], momentum=0.9, nesterov=True,
+                          weight_decay=arg['weight_decay'])
+    epoch_start = 0
+    # lr_i = lr0 / (1 + lr_decay * epoch // lr_epochs
+    lr_lambda = lambda ep: 1 / (1 + arg['lr_decay'] * (ep // arg['lr_epochs']))
+    scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+#%% Import data
+if __name__ == '__main__':
+    dataloader_train = DataLoader(db.train_dataset_concat, batch_size=arg['batch_size'],
+                                  shuffle=True, num_workers=arg['num_workers'])
+
+    dataloader_dev = DataLoader(db.dev_dataset_concat, batch_size=arg['batch_size'],
+                                shuffle=True, num_workers=arg['num_workers'])
+
+    dataloaders = {'train': dataloader_train,
+                   'validation': dataloader_dev}
+
+#%% Load model if retraining model
+# # https://pytorch.org/tutorials/beginner/saving_loading_models.html
+if __name__ == '__main__':
+    if arg['retrain'] is not None:
+        assert os.path.exists(arg['retrain']), "Argument 'retrain' must be a valid path to model"
+        model_path = arg['retrain']
+        net = Net3d(bn_affine=arg['bn_affine'])
+
+        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        print(device)
+        net.to(device)
+
+        # Loading model
+        checkpoint = torch.load(model_path)
+        net.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        epoch_start = checkpoint['epoch']
+        loss = checkpoint['loss']
+        scheduler.load_state_dict(checkpoint['scheduler'])
+
+
+#%% Train Net
+if __name__ == '__main__':
+    print(arg)
+    # Log files
+    PATH = '/medical/projects/age-regression/pytorch-models'
+    data_build_name = arg['build_dataset'].split(sep='.')[-1]
+    log_name = '{}run-net3d_ueda_v1-{}.log'.format(arg['run_script_name'], data_build_name)
+    # Tensorbord
+    # writer = SummaryWriter(log_dir='./tensorboard', comment=log_name.split('.')[0])
+    tz = pytz.timezone('Europe/Berlin')    # timezone
+    start_time = datetime.now(tz)
+
+    with open(join(PATH, log_name), 'w') as file:
+        file.write(str(datetime.now(tz)) +
+                   '\nRun script:' + arg['run_script_name'] +
+                   '\n\nepoch,phase,loss\n')
+
+    for epoch in range(epoch_start, arg['n_epoch']):
+        print('epoch: ', epoch)
+        for param_group in optimizer.param_groups:
+            print('learning rate:', param_group['lr'])
+
+        for phase in ['train', 'validation']:
+            if phase == 'train':
+                net.train()
+            else:
+                net.eval()
+
+            running_loss = 0.0
+
+            dataloader_phase = dataloaders[phase]
+            for i_batch, sample_batch in enumerate(dataloader_phase):
+                inputs, age = sample_batch['image'], sample_batch['age_years'].float()
+                age = age.view(-1, 1)
+                inputs, age = inputs.to(device), age.to(device)
+
+                # zero the parameter gradients
+                optimizer.zero_grad()
+
+                # forward
+                # track history only when training
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = net(inputs)
+                    loss = criterion(outputs, age)
+                    MAE_err = MAE(outputs, age)  # only for plotting
+
+                    if phase == 'train':
+                        # backward + optimize only in train phase
+                        loss.backward()
+                        optimizer.step()
+
+                # print statistics; if categorical -- loss.item() * inputs.size(0)
+                running_loss += loss.item()     # Note: only call .item() in order to avoid copying the whole graph
+                if i_batch % 5 == 1:    # print every 5nd mini-batch
+                    print('[{}, {}] {} loss: {:.4f}'.format(epoch + 1, i_batch + 1, phase, running_loss / 4))
+
+            # log of loss
+            with open(join(PATH, log_name), 'a') as file:
+                file.write(str(epoch) + ',' + phase + ',' + str(loss.item()) + '\n'+
+                           str(epoch) + ',' + phase + '_MAE' + ',' + str(MAE_err.item()) + '\n')
+            # # tensorboard -- loss per run
+            # plot_name = log_name.split('.')[0]
+            # writer.add_scalars(plot_name, {phase: loss.item()}, epoch + 1)
+            # # loss for runs
+            # if phase == 'validation':
+            #     scalar_label = arg['run_script_name'] + 'run_' + phase
+            #     writer.add_scalars('validation', {scalar_label: loss.item()}, epoch + 1)
+
+        # Save model on the chosen epochs
+        if epoch+1 in arg['save_epoch']:
+            model_name = log_name.split('.')[0] + '-' + str(epoch+1) + 'ep.tar'
+            torch.save({
+                 'epoch': epoch+1,
+                 'model_state_dict': net.state_dict(),
+                 'optimizer_state_dict': optimizer.state_dict(),
+                 'loss': loss,
+                 'scheduler': scheduler.state_dict()
+                  }, join(PATH, model_name))
+
+        # Decay Learning Rate
+        scheduler.step()
+        del loss, MAE_err   # delete before next epoch to save memory
+
+    print('Finished Training')
+    run_time = datetime.now(tz) - start_time
+    print('Run time ', run_time.__str__())
+
