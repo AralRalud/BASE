@@ -70,11 +70,11 @@ Predicting brain age with deep learning from raw imaging data results in a relia
 Accurate brain age prediction with lightweight deep neural networks
   * github: we used the authors [implementation](https://github.com/ha-ha-ha-han/UKBiobank_deep_pretrain) (accessed in 2020-03)
 
-## Model training
+## Model training 
 This repository containes the weights of the pre-trained models and the code for model inference. The training code used  
-to train the models on the multi-site dataset is not included in this repository. However, all the hyperparameters used
-for traininig, as well as the loss function, learning rate schedule, and the optimizer are available in the `./src/models`
-directory, contained in each model's file.
+to train the models on the multi-site dataset is not included in this repository. However, all the hyperparameters, 
+as well as the loss function, learning rate schedule, and the optimizer are available in the `./src/models`
+directory, contained in each individual model's file.
 The MONAI library can be used for random augmentations. 
 
 ### Model weights
@@ -88,7 +88,7 @@ where:
 * `autor` is the name of the first author of the paper,
 * `random_seed` is the random seed used for the model weight initialization,
 * `number_of_epochs` is the number of epochs used for training. 
-f
+
 ### Model inference
 
 Each of the four models can be used for inference, as demonstrated in the `./src/models` files. The input should be 
@@ -168,7 +168,7 @@ The radar plot was generated using R and the `ggradar` package. The R code is av
 ![BASE radar ](https://ars.els-cdn.com/content/image/1-s2.0-S1053811923006183-gr2_lrg.jpg "BASE output")
 
 ## Citation
-If you use this code, please cite the following paper:
+When usin our evaluation protocol, please cite the following paper:
 
 **L. Dular and Ž. Špiclin, “BASE: Brain Age Standardized Evaluation,” NeuroImage, vol. 285, p. 120469, Jan. 2024, doi: 10.1016/j.neuroimage.2023.120469.**
 
