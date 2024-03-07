@@ -68,7 +68,7 @@ Predicting brain age with deep learning from raw imaging data results in a relia
 * **Model 3** by [Ueda at al. (2019)](https://ieeexplore.ieee.org/document/8759392), An age estimation method using 3D-CNN for brain MRI images
 * **Model 4** by [Peng at al. (2021)](https://www.sciencedirect.com/science/article/pii/S1361841520302358), 
 Accurate brain age prediction with lightweight deep neural networks
-  * github: we used the authors [implementation](https://github.com/ha-ha-ha-han/UKBiobank_deep_pretrain) (accessed in 2020-03)
+  * GitHub: we used the authors [implementation](https://github.com/ha-ha-ha-han/UKBiobank_deep_pretrain) (accessed in 2020-03)
 
 ## Model training 
 This repository containes the weights of the pre-trained models and the code for model inference. The training code used  
@@ -100,7 +100,7 @@ a 3D T1w MR image, and the output is the predicted brain age. The inference code
 
 ## Datasets
 
-This research uses 9 public datasets for a wide evaluation. The datasets descirbed in Table 1 of the paper. The 
+This research uses 9 public datasets for a wide evaluation. The datasets descirbed in Table 1 of the paper.
 The list of the datasets used in this research is as follows:
 * **Multisite dataset**:
   * [ABIDE I](https://fcon_1000.projects.nitrc.org/indi/abide/abide_I.html)
@@ -168,7 +168,7 @@ The radar plot was generated using R and the `ggradar` package. The R code is av
 ![BASE radar ](https://ars.els-cdn.com/content/image/1-s2.0-S1053811923006183-gr2_lrg.jpg "BASE output")
 
 ## Citation
-When usin our evaluation protocol, please cite the following paper:
+When using our evaluation protocol, please cite the following paper:
 
 **L. Dular and Ž. Špiclin, “BASE: Brain Age Standardized Evaluation,” NeuroImage, vol. 285, p. 120469, Jan. 2024, doi: 10.1016/j.neuroimage.2023.120469.**
 
